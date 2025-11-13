@@ -62,7 +62,7 @@ def prepare_data(df, main_segment_size=150_000, sub_segment_size=15_000, test_si
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
     
-    return train_loader, val_loader, num_features, feature_names
+    return train_loader, val_loader, num_features, feature_names, scaler
 
 def prepare_spectrogram_data(df, segment_size=150_000, test_size=0.2):
     """
@@ -110,6 +110,132 @@ def prepare_spectrogram_data(df, segment_size=150_000, test_size=0.2):
     
     print(f'Spectrogram data: Train={len(train_dataset)}, Val={len(val_dataset)}')
     return train_loader, val_loader
+
+
+def prepare_test_data(test_folder='test', main_segment_size=150_000, sub_segment_size=15_000, scaler=None, feature_names=None):
+    """
+    Prepares test data from /test folder for final evaluation.
+    Each CSV file in test folder contains one segment of 150,000 samples.
+    
+    Args:
+        test_folder: Path to test folder containing CSV files
+        main_segment_size: Size of each main segment (150,000)
+        sub_segment_size: Size of each sub-segment (15,000)
+        scaler: Fitted StandardScaler from training data (must be provided)
+        feature_names: Feature names from training data (must be provided)
+    
+    Returns:
+        test_loader: DataLoader for test data
+        segment_ids: List of segment IDs (filenames) for each sample
+    """
+    import os
+    import glob
+    
+    if scaler is None or feature_names is None:
+        raise ValueError("scaler and feature_names must be provided from training data")
+    
+    print(f"Loading test data from {test_folder}...")
+    test_files = sorted(glob.glob(os.path.join(test_folder, '*.csv')))
+    print(f"Found {len(test_files)} test segments")
+    
+    X_sequences = []
+    segment_ids = []
+    num_sub_segments = main_segment_size // sub_segment_size
+    
+    for test_file in tqdm(test_files):
+        # Load test segment
+        df_test = pd.read_csv(test_file, dtype={'acoustic_data': np.int16})
+        segment_id = os.path.basename(test_file).replace('.csv', '')
+        
+        # Check if segment has correct size
+        if len(df_test) != main_segment_size:
+            print(f"Warning: {segment_id} has {len(df_test)} samples, expected {main_segment_size}")
+            continue
+        
+        # Extract features same way as training
+        main_segment_features = []
+        for j in range(num_sub_segments):
+            start = j * sub_segment_size
+            end = start + sub_segment_size
+            sub_segment = df_test['acoustic_data'].iloc[start:end]
+            features = create_features(sub_segment, sub_segment_size)
+            main_segment_features.append(features)
+        
+        X_sequences.append(pd.concat(main_segment_features, axis=1).T.values)
+        segment_ids.append(segment_id)
+    
+    X_test = np.array(X_sequences)
+    
+    # Scale using the same scaler from training
+    num_samples, seq_len, num_features = X_test.shape
+    X_test_reshaped = X_test.reshape(num_samples * seq_len, num_features)
+    X_test_scaled = scaler.transform(X_test_reshaped)
+    X_test_final = X_test_scaled.reshape(num_samples, seq_len, num_features)
+    
+    print(f'Test data shape: {X_test_final.shape}')
+    
+    # Create DataLoader (no labels for test data)
+    X_test_tensor = torch.tensor(X_test_final, dtype=torch.float32)
+    test_dataset = TensorDataset(X_test_tensor)
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    
+    return test_loader, segment_ids
+
+
+def prepare_test_spectrogram_data(test_folder='test', segment_size=150_000):
+    """
+    Prepares test spectrogram data from /test folder for image models.
+    
+    Args:
+        test_folder: Path to test folder containing CSV files
+        segment_size: Size of each segment (150,000)
+    
+    Returns:
+        test_loader: DataLoader for test spectrogram data
+        segment_ids: List of segment IDs (filenames) for each sample
+    """
+    import os
+    import glob
+    
+    print(f"Loading test spectrogram data from {test_folder}...")
+    test_files = sorted(glob.glob(os.path.join(test_folder, '*.csv')))
+    print(f"Found {len(test_files)} test segments")
+    
+    mag_specs, phase_specs = [], []
+    segment_ids = []
+    
+    for test_file in tqdm(test_files):
+        df_test = pd.read_csv(test_file, dtype={'acoustic_data': np.int16})
+        segment_id = os.path.basename(test_file).replace('.csv', '')
+        
+        if len(df_test) != segment_size:
+            print(f"Warning: {segment_id} has {len(df_test)} samples, expected {segment_size}")
+            continue
+        
+        segment = df_test['acoustic_data'].values
+        
+        # Generate spectrograms
+        mag_spec, phase_spec = generate_spectrograms(segment)
+        
+        # Normalize to [0, 1] range
+        def normalize(img):
+            img_min, img_max = img.min(), img.max()
+            return (img - img_min) / (img_max - img_min + 1e-6)
+        
+        mag_specs.append(normalize(mag_spec))
+        phase_specs.append(normalize(phase_spec))
+        segment_ids.append(segment_id)
+    
+    # Convert to tensors
+    mag_tensor = torch.tensor(np.array(mag_specs), dtype=torch.float32)
+    phase_tensor = torch.tensor(np.array(phase_specs), dtype=torch.float32)
+    
+    # Create dataset
+    test_dataset = TensorDataset(mag_tensor, phase_tensor)
+    test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False)
+    
+    print(f'Test spectrogram data: {len(test_dataset)} segments')
+    return test_loader, segment_ids
 
 
 

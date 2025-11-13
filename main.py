@@ -21,7 +21,13 @@ def main():
     
     # --- 2. Data Loading and Preparation ---
     df = data_loader.load_data(DATA_PATH)
-    train_loader, val_loader, num_features, _ = data_pipeline.prepare_data(df)
+    train_loader, val_loader, num_features, _, scaler = data_pipeline.prepare_data(df)
+    
+    # Save scaler for test evaluation
+    import pickle
+    with open('scaler.pkl', 'wb') as f:
+        pickle.dump(scaler, f)
+    print("Saved scaler to scaler.pkl for test evaluation")
 
     # Save validation DataLoader for use in the analysis notebook
     torch.save(val_loader, "val_loader.pth")

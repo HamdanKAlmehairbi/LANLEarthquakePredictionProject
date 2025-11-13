@@ -1,6 +1,6 @@
 """
 Double Descent Experiment - Full Training
-Trains all models for 100 epochs, tracking best validation MAE and generating loss curves.
+Trains all models for 200 epochs, tracking best validation MAE and generating loss curves.
 """
 import pandas as pd
 import torch
@@ -17,7 +17,7 @@ import trainer
 from image_models import MLPERRegressionModel
 
 
-def train_model_full(model, model_name, train_loader, val_loader, epochs=100, 
+def train_model_full(model, model_name, train_loader, val_loader, epochs=200, 
                      learning_rate=0.001, is_image_model=False):
     """
     Train model for full epochs with per-epoch printing and track best validation MAE.
@@ -102,10 +102,10 @@ def train_model_full(model, model_name, train_loader, val_loader, epochs=100,
 
 def main():
     """
-    Train all models for 100 epochs, track best epochs, and generate plots.
+    Train all models for 200 epochs, track best epochs, and generate plots.
     """
     print("=" * 70)
-    print("Full Training Experiment - All Models for 100 Epochs")
+    print("Full Training Experiment - All Models for 200 Epochs")
     print("=" * 70)
     
     # Setup
@@ -117,8 +117,14 @@ def main():
     df = data_loader.load_data(DATA_PATH)
     
     # Prepare sequence data
-    train_loader, val_loader, num_features, _ = data_pipeline.prepare_data(df)
+    train_loader, val_loader, num_features, _, scaler = data_pipeline.prepare_data(df)
     print(f"Number of features: {num_features}")
+    
+    # Save scaler for test evaluation
+    import pickle
+    with open('scaler.pkl', 'wb') as f:
+        pickle.dump(scaler, f)
+    print("✓ Scaler saved to scaler.pkl for test evaluation")
     
     # Prepare image data
     print("\n--- Preparing spectrogram data for image model ---")
@@ -155,7 +161,7 @@ def main():
             model_name=model_name,
             train_loader=train_loader,
             val_loader=val_loader,
-            epochs=100,
+            epochs=200,
             is_image_model=False
         )
         
@@ -174,7 +180,7 @@ def main():
             model_name="MLPER-Inspired (Image)",
             train_loader=img_train_loader,
             val_loader=img_val_loader,
-            epochs=100,
+            epochs=200,
             is_image_model=True
         )
         
