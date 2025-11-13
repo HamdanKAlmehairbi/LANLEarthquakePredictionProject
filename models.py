@@ -34,7 +34,7 @@ class LSTMModel(nn.Module):
         self.lstm = nn.LSTM(
             input_size=input_features, hidden_size=hidden_units,
             num_layers=num_layers, batch_first=True,
-            dropout=0.2, bidirectional=True
+            dropout=0.4, bidirectional=True  # Increased from 0.2 to 0.4 for better regularization
         )
         self.fc1 = nn.Linear(hidden_units * 2, 32)  # Input size is doubled
         self.relu = nn.LeakyReLU(0.01)
