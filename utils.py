@@ -22,8 +22,25 @@ def set_seed(seed=42):
 
 def get_device():
     """Returns the available device (CUDA or CPU)."""
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f'Using device: {device}')
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+        print(f'Using device: {device} ({torch.cuda.get_device_name(0)})')
+        print(f'CUDA Version: {torch.version.cuda}')
+    else:
+        device = torch.device('cpu')
+        print(f'Using device: {device}')
+        # Check if NVIDIA GPU exists but PyTorch can't use it
+        try:
+            import subprocess
+            result = subprocess.run(['nvidia-smi'], capture_output=True, text=True, timeout=2)
+            if result.returncode == 0:
+                print('⚠️  WARNING: NVIDIA GPU detected but PyTorch cannot use it!')
+                print('   This usually means PyTorch was installed without CUDA support.')
+                print('   To fix this, install PyTorch with CUDA support:')
+                print('   Visit: https://pytorch.org/get-started/locally/')
+                print('   Or run: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121')
+        except:
+            pass  # nvidia-smi not available or other error
     return device
 
 
