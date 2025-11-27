@@ -33,3 +33,6 @@ venv/
 .DS_Store
 Thumbs.db
 
+# Large loader artifacts (excluded to avoid GitHub >100MB limit)
+img_train_loader.pth
+img_val_loader.pth

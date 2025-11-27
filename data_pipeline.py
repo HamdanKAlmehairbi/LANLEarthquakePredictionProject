@@ -37,30 +37,52 @@ def prepare_data(df, main_segment_size=150_000, sub_segment_size=15_000, test_si
     X_seq_featured = np.array(X_sequences)
     y_seq_featured = np.array(y_sequences)
     
-    # Scale the features
+    # Correct Time-Series Split (BEFORE scaling to prevent data leakage)
     num_samples, seq_len, num_features = X_seq_featured.shape
-    X_seq_reshaped = X_seq_featured.reshape(num_samples * seq_len, num_features)
+    
+    if test_size == 0.0:
+        # Use all data for training (no validation split)
+        X_train_raw = X_seq_featured
+        y_train_s = y_seq_featured
+        X_val_raw = np.array([]).reshape(0, seq_len, num_features)
+        y_val_s = np.array([])
+    else:
+        split_index = int(num_samples * (1 - test_size))
+        X_train_raw, X_val_raw = X_seq_featured[:split_index], X_seq_featured[split_index:]
+        y_train_s, y_val_s = y_seq_featured[:split_index], y_seq_featured[split_index:]
+    
+    # Scale the features: fit scaler ONLY on training data, then transform both
+    X_train_reshaped = X_train_raw.reshape(-1, num_features)
     scaler = StandardScaler()
-    X_seq_scaled = scaler.fit_transform(X_seq_reshaped)
-    X_final = X_seq_scaled.reshape(num_samples, seq_len, num_features)
-    print(f'\nFinal data shape for temporal models: {X_final.shape}')
-
-    # Correct Time-Series Split
-    split_index = int(num_samples * (1 - test_size))
-    X_train_s, X_val_s = X_final[:split_index], X_final[split_index:]
-    y_train_s, y_val_s = y_seq_featured[:split_index], y_seq_featured[split_index:]
-    print(f'Train shape: {X_train_s.shape}, Validation shape: {X_val_s.shape}')
+    X_train_scaled = scaler.fit_transform(X_train_reshaped)
+    X_train_s = X_train_scaled.reshape(X_train_raw.shape[0], seq_len, num_features)
+    
+    # Transform validation data using the scaler fitted on training data (if validation set exists)
+    if len(X_val_raw) > 0:
+        X_val_reshaped = X_val_raw.reshape(-1, num_features)
+        X_val_scaled = scaler.transform(X_val_reshaped)
+        X_val_s = X_val_scaled.reshape(X_val_raw.shape[0], seq_len, num_features)
+    else:
+        X_val_s = np.array([]).reshape(0, seq_len, num_features)
+    
+    print(f'\nFinal data shape for temporal models: Train={X_train_s.shape}, Val={X_val_s.shape if len(X_val_s) > 0 else (0, seq_len, num_features)}')
 
     # Create PyTorch DataLoaders
     X_train_tensor = torch.tensor(X_train_s, dtype=torch.float32)
     y_train_tensor = torch.tensor(y_train_s, dtype=torch.float32).view(-1, 1)
-    X_val_tensor = torch.tensor(X_val_s, dtype=torch.float32)
-    y_val_tensor = torch.tensor(y_val_s, dtype=torch.float32).view(-1, 1)
     train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-    val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
-    
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    
+    if len(X_val_s) > 0:
+        X_val_tensor = torch.tensor(X_val_s, dtype=torch.float32)
+        y_val_tensor = torch.tensor(y_val_s, dtype=torch.float32).view(-1, 1)
+        val_dataset = TensorDataset(X_val_tensor, y_val_tensor)
+        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    else:
+        # Create empty validation loader
+        val_dataset = TensorDataset(torch.tensor([], dtype=torch.float32).reshape(0, seq_len, num_features),
+                                   torch.tensor([], dtype=torch.float32).reshape(0, 1))
+        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
     
     return train_loader, val_loader, num_features, feature_names, scaler
 
@@ -96,10 +118,16 @@ def prepare_spectrogram_data(df, segment_size=150_000, test_size=0.2):
     target_tensor = torch.tensor(np.array(targets), dtype=torch.float32).view(-1, 1)
     
     # Time-series split
-    split_index = int(len(targets) * (1 - test_size))
-    mag_train, mag_val = mag_tensor[:split_index], mag_tensor[split_index:]
-    phase_train, phase_val = phase_tensor[:split_index], phase_tensor[split_index:]
-    y_train, y_val = target_tensor[:split_index], target_tensor[split_index:]
+    if test_size == 0.0:
+        # Use all data for training (no validation split)
+        mag_train, mag_val = mag_tensor, torch.tensor([], dtype=torch.float32).reshape(0, *mag_tensor.shape[1:])
+        phase_train, phase_val = phase_tensor, torch.tensor([], dtype=torch.float32).reshape(0, *phase_tensor.shape[1:])
+        y_train, y_val = target_tensor, torch.tensor([], dtype=torch.float32).reshape(0, 1)
+    else:
+        split_index = int(len(targets) * (1 - test_size))
+        mag_train, mag_val = mag_tensor[:split_index], mag_tensor[split_index:]
+        phase_train, phase_val = phase_tensor[:split_index], phase_tensor[split_index:]
+        y_train, y_val = target_tensor[:split_index], target_tensor[split_index:]
     
     # Create datasets (using tuple format for mag, phase, target)
     train_dataset = TensorDataset(mag_train, phase_train, y_train)
@@ -236,6 +264,53 @@ def prepare_test_spectrogram_data(test_folder='test', segment_size=150_000):
     
     print(f'Test spectrogram data: {len(test_dataset)} segments')
     return test_loader, segment_ids
+
+
+def convert_df_to_features(df, main_segment_size=150_000, sub_segment_size=15_000):
+    """
+    Converts a raw dataframe to numpy arrays of features and labels.
+    This is used for K-Fold Cross-Validation where we need to split the data
+    before scaling to prevent data leakage.
+    
+    Args:
+        df: Raw dataframe with 'acoustic_data' and 'time_to_failure' columns
+        main_segment_size: Size of each main segment (150,000)
+        sub_segment_size: Size of each sub-segment (15,000)
+    
+    Returns:
+        X_sequences: numpy array of shape (num_samples, seq_len, num_features)
+        y_sequences: numpy array of shape (num_samples,)
+        scaler_template: A StandardScaler instance (not fitted yet)
+        feature_names: List of feature names
+    """
+    print("Converting DataFrame to feature sequences...")
+    num_sub_segments = main_segment_size // sub_segment_size
+    num_main_segments = len(df) // main_segment_size
+    
+    X_sequences = []
+    y_sequences = []
+    feature_names = None
+    
+    for i in tqdm(range(num_main_segments)):
+        main_segment_features = []
+        for j in range(num_sub_segments):
+            start = i * main_segment_size + j * sub_segment_size
+            end = start + sub_segment_size
+            sub_segment = df['acoustic_data'].iloc[start:end]
+            features = create_features(sub_segment, sub_segment_size)
+            if feature_names is None:
+                feature_names = features.index.tolist()
+            main_segment_features.append(features)
+        
+        # Stack sub-segment features into a sequence
+        X_sequences.append(pd.concat(main_segment_features, axis=1).T.values)
+        y_sequences.append(df['time_to_failure'].iloc[(i+1)*main_segment_size - 1])
+    
+    X_array = np.array(X_sequences)
+    y_array = np.array(y_sequences)
+    
+    # Return an unfitted scaler template that will be fitted per fold
+    return X_array, y_array, StandardScaler(), feature_names
 
 
 

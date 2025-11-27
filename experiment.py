@@ -32,11 +32,79 @@ from image_models import MLPERRegressionModel
 from prepare_dataset import load_prepared_dataset
 
 
-def train_model_full(model, model_name, train_loader, val_loader, epochs=200, 
-                     learning_rate=0.001, is_image_model=False):
+def train_lstm_static(model, model_name, train_loader, val_loader, epochs=200, learning_rate=0.001):
+    """
+    Specialized training function for LSTM with a static learning rate,
+    replicating the original successful training environment.
+    """
+    device = utils.get_device()
+    model.to(device)
+    criterion = torch.nn.L1Loss()
+    # Use a plain Adam optimizer with a fixed learning rate and NO weight decay
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    
+    history = {'train_loss': [], 'val_loss': [], 'epoch': []}
+    best_val_mae = float('inf')
+    best_epoch = 0
+    
+    print(f"\n{'='*70}")
+    print(f"Training {model_name} with STATIC learning rate: {learning_rate}")
+    print(f"{'='*70}")
+    
+    for epoch in range(epochs):
+        model.train()
+        running_loss = 0.0
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+        
+        train_loss = running_loss / len(train_loader)
+        
+        model.eval()
+        val_running_loss = 0.0
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                val_running_loss += loss.item()
+        
+        val_loss = val_running_loss / len(val_loader)
+        
+        history['train_loss'].append(train_loss)
+        history['val_loss'].append(val_loss)
+        history['epoch'].append(epoch + 1)
+        
+        # Track the best epoch
+        if val_loss < best_val_mae:
+            best_val_mae = val_loss
+            best_epoch = epoch + 1
+        print(f'Epoch {epoch+1:3d}/{epochs} | Train MAE: {train_loss:.4f} | Val MAE: {val_loss:.4f} | Best Val MAE: {best_val_mae:.4f} (Epoch {best_epoch})')
+    print(f"\n✓ {model_name} training complete!")
+    print(f"  Best validation MAE: {best_val_mae:.4f} at epoch {best_epoch}")
+    
+    return history, best_epoch, best_val_mae
+
+
+def train_model_full(model, model_name, train_loader, val_loader, optimizer, scheduler, epochs=200, 
+                     is_image_model=False):
     """
     Train model for full epochs with per-epoch printing and track best validation MAE.
-    Includes learning rate scheduler for better convergence.
+    
+    Args:
+        model: PyTorch model to train
+        model_name: Name of the model (for logging)
+        train_loader: Training data loader
+        val_loader: Validation data loader
+        optimizer: PyTorch optimizer instance
+        scheduler: PyTorch scheduler instance (can be None)
+        epochs: Number of epochs to train
+        is_image_model: Whether this is an image model (affects batch unpacking)
     
     Returns:
         history: Dictionary with train_loss, val_loss, epoch lists
@@ -46,19 +114,6 @@ def train_model_full(model, model_name, train_loader, val_loader, epochs=200,
     device = utils.get_device()
     model.to(device)
     criterion = torch.nn.L1Loss()
-    # Add weight decay for L2 regularization to prevent overfitting
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
-    
-    # Use OneCycleLR scheduler: warm-up phase provides regularization,
-    # cooldown phase allows smooth convergence to robust minima
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer,
-        max_lr=learning_rate,  # Peak LR (same as static rate that worked well)
-        steps_per_epoch=len(train_loader),
-        epochs=epochs,
-        pct_start=0.3,  # Spend 30% of time warming up
-        anneal_strategy='cos'  # Cosine annealing for smooth decay
-    )
     
     history = {'train_loss': [], 'val_loss': [], 'epoch': []}
     best_val_mae = float('inf')
@@ -87,8 +142,9 @@ def train_model_full(model, model_name, train_loader, val_loader, epochs=200,
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
-            # OneCycleLR must be stepped after each batch (not each epoch)
-            scheduler.step()
+            # Step scheduler after each batch if it's a per-batch scheduler (e.g., OneCycleLR)
+            if scheduler is not None:
+                scheduler.step()
             running_loss += loss.item()
         
         train_loss = running_loss / len(train_loader)
@@ -137,15 +193,18 @@ def main():
     """
     Main experiment workflow:
     1. Load pre-prepared data from prepare_dataset.py
-    2. Train all models for 200 epochs
+    2. Train all models with all optimizer configurations
     3. Track best epochs and save results
     """
     print("=" * 70)
-    print("Full Training Experiment - All Models for 200 Epochs")
+    print("Optimizer Comparison Experiment - All Models with Multiple Optimizers")
     print("=" * 70)
     
     # Setup
     utils.set_seed(config.RANDOM_SEED)
+    
+    # Import optimizer configurations
+    from config import OPTIMIZER_CONFIGS
     
     # Load pre-prepared data
     print("\n--- Loading pre-prepared dataset ---")
@@ -188,158 +247,213 @@ def main():
         "Hybrid w/ Attention": models.HybridAttention,
     }
     
-    # Store results
-    all_histories = {}
-    best_epochs = {}
-    best_val_maes = {}
+    # Store results - nested structure: {model_name: {optimizer_name: history}}
+    all_histories = {model_name: {} for model_name in sequence_models.keys()}
+    if has_image_data:
+        all_histories["MLPER-Inspired (Image)"] = {}
     
-    # Train all sequence models
+    # Train all sequence models with all optimizer configurations
     print("\n" + "=" * 70)
-    print("Training Sequence-Based Models")
+    print("Training Sequence-Based Models with Multiple Optimizers")
     print("=" * 70)
     
     for model_name, ModelClass in sequence_models.items():
-        model = ModelClass(input_features=num_features)
-        print(f"\nModel: {model_name}")
-        print(f"Parameters: {utils.count_parameters(model):,}")
+        print(f"\n{'#'*70}")
+        print(f"# Model: {model_name}")
+        print(f"{'#'*70}")
         
-        history, best_epoch, best_val_mae = train_model_full(
-            model=model,
-            model_name=model_name,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            epochs=config.LONG_TRAINING_EPOCHS,
-            learning_rate=config.DEFAULT_LEARNING_RATE,
-            is_image_model=False
-        )
+        # Create a sample model to get parameter count (for display only)
+        sample_model = ModelClass(input_features=num_features)
+        print(f"Parameters: {utils.count_parameters(sample_model):,}")
         
-        all_histories[model_name] = history
-        best_epochs[model_name] = best_epoch
-        best_val_maes[model_name] = best_val_mae
+        # Loop through optimizer configurations
+        for opt_config in OPTIMIZER_CONFIGS:
+            print(f"\n{'-'*70}")
+            print(f"Optimizer Config: {opt_config['name']}")
+            print(f"{'-'*70}")
+            
+            # Create a fresh model instance for each optimizer config
+            model = ModelClass(input_features=num_features)
+            
+            # Optimizer factory
+            if opt_config['optimizer'] == 'Adam':
+                optimizer = torch.optim.Adam(
+                    model.parameters(), 
+                    lr=opt_config['lr'], 
+                    weight_decay=opt_config.get('weight_decay', 0.0)
+                )
+            elif opt_config['optimizer'] == 'AdamW':
+                optimizer = torch.optim.AdamW(
+                    model.parameters(), 
+                    lr=opt_config['lr'], 
+                    weight_decay=opt_config.get('weight_decay', 0.0)
+                )
+            elif opt_config['optimizer'] == 'SGD':
+                optimizer = torch.optim.SGD(
+                    model.parameters(), 
+                    lr=opt_config['lr'], 
+                    momentum=opt_config.get('momentum', 0.9),
+                    weight_decay=opt_config.get('weight_decay', 0.0)
+                )
+            else:
+                raise ValueError(f"Unknown optimizer: {opt_config['optimizer']}")
+            
+            # Scheduler factory
+            scheduler = None
+            if opt_config['scheduler'] == 'OneCycleLR':
+                scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                    optimizer,
+                    max_lr=opt_config.get('max_lr', opt_config['lr'] * 3),
+                    steps_per_epoch=len(train_loader),
+                    epochs=config.LONG_TRAINING_EPOCHS,
+                    pct_start=0.3,
+                    anneal_strategy='cos'
+                )
+            elif opt_config['scheduler'] == 'CyclicLR':
+                scheduler = torch.optim.lr_scheduler.CyclicLR(
+                    optimizer,
+                    base_lr=opt_config['lr'],
+                    max_lr=opt_config.get('max_lr', opt_config['lr'] * 10),
+                    step_size_up=len(train_loader) * 5,  # 5 epochs up, 5 epochs down
+                    mode='triangular2'
+                )
+            elif opt_config['scheduler'] is None:
+                scheduler = None
+            else:
+                raise ValueError(f"Unknown scheduler: {opt_config['scheduler']}")
+            
+            # Train the model
+            history, best_epoch, best_val_mae = train_model_full(
+                model=model,
+                model_name=f"{model_name} - {opt_config['name']}",
+                train_loader=train_loader,
+                val_loader=val_loader,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                epochs=config.LONG_TRAINING_EPOCHS,
+                is_image_model=False
+            )
+            
+            # Store results
+            all_histories[model_name][opt_config['name']] = history
     
     # Train image model if available
     if has_image_data:
         print("\n" + "=" * 70)
-        print("Training Image-Based Model")
+        print("Training Image-Based Model with Multiple Optimizers")
         print("=" * 70)
         
+        print(f"\n{'#'*70}")
+        print(f"# Model: MLPER-Inspired (Image)")
+        print(f"{'#'*70}")
+        
         img_model = MLPERRegressionModel()
-        print(f"\nModel: MLPER-Inspired (Image)")
         print(f"Parameters: {utils.count_parameters(img_model):,}")
         
-        history, best_epoch, best_val_mae = train_model_full(
-            model=img_model,
-            model_name="MLPER-Inspired (Image)",
-            train_loader=img_train_loader,
-            val_loader=img_val_loader,
-            epochs=config.LONG_TRAINING_EPOCHS,
-            learning_rate=config.DEFAULT_LEARNING_RATE,
-            is_image_model=True
-        )
-        
-        all_histories["MLPER-Inspired (Image)"] = history
-        best_epochs["MLPER-Inspired (Image)"] = best_epoch
-        best_val_maes["MLPER-Inspired (Image)"] = best_val_mae
+        # Loop through optimizer configurations
+        for opt_config in OPTIMIZER_CONFIGS:
+            print(f"\n{'-'*70}")
+            print(f"Optimizer Config: {opt_config['name']}")
+            print(f"{'-'*70}")
+            
+            # Create a fresh model instance for each optimizer config
+            img_model = MLPERRegressionModel()
+            
+            # Optimizer factory
+            if opt_config['optimizer'] == 'Adam':
+                optimizer = torch.optim.Adam(
+                    img_model.parameters(), 
+                    lr=opt_config['lr'], 
+                    weight_decay=opt_config.get('weight_decay', 0.0)
+                )
+            elif opt_config['optimizer'] == 'AdamW':
+                optimizer = torch.optim.AdamW(
+                    img_model.parameters(), 
+                    lr=opt_config['lr'], 
+                    weight_decay=opt_config.get('weight_decay', 0.0)
+                )
+            elif opt_config['optimizer'] == 'SGD':
+                optimizer = torch.optim.SGD(
+                    img_model.parameters(), 
+                    lr=opt_config['lr'], 
+                    momentum=opt_config.get('momentum', 0.9),
+                    weight_decay=opt_config.get('weight_decay', 0.0)
+                )
+            else:
+                raise ValueError(f"Unknown optimizer: {opt_config['optimizer']}")
+            
+            # Scheduler factory
+            scheduler = None
+            if opt_config['scheduler'] == 'OneCycleLR':
+                scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                    optimizer,
+                    max_lr=opt_config.get('max_lr', opt_config['lr'] * 3),
+                    steps_per_epoch=len(img_train_loader),
+                    epochs=config.IMAGE_MODEL_EPOCHS,
+                    pct_start=0.3,
+                    anneal_strategy='cos'
+                )
+            elif opt_config['scheduler'] == 'CyclicLR':
+                scheduler = torch.optim.lr_scheduler.CyclicLR(
+                    optimizer,
+                    base_lr=opt_config['lr'],
+                    max_lr=opt_config.get('max_lr', opt_config['lr'] * 10),
+                    step_size_up=len(img_train_loader) * 5,  # 5 epochs up, 5 epochs down
+                    mode='triangular2'
+                )
+            elif opt_config['scheduler'] is None:
+                scheduler = None
+            else:
+                raise ValueError(f"Unknown scheduler: {opt_config['scheduler']}")
+            
+            # Train the model
+            history, best_epoch, best_val_mae = train_model_full(
+                model=img_model,
+                model_name=f"MLPER-Inspired (Image) - {opt_config['name']}",
+                train_loader=img_train_loader,
+                val_loader=img_val_loader,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                epochs=config.IMAGE_MODEL_EPOCHS,
+                is_image_model=True
+            )
+            
+            # Store results
+            all_histories["MLPER-Inspired (Image)"][opt_config['name']] = history
     
     # Save results
     print("\n" + "=" * 70)
     print("Saving Results")
     print("=" * 70)
     
-    # Save best epochs summary
-    best_epochs_df = pd.DataFrame({
-        'Model': list(best_epochs.keys()),
-        'Best_Epoch': list(best_epochs.values()),
-        'Best_Val_MAE': list(best_val_maes.values())
-    })
-    best_epochs_df = best_epochs_df.sort_values('Best_Val_MAE')
-    config.ensure_dir(config.BEST_EPOCHS_SUMMARY)
-    best_epochs_df.to_csv(config.BEST_EPOCHS_SUMMARY, index=False)
-    print("\nBest Epochs Summary:")
-    print(best_epochs_df.to_string(index=False))
-    
-    # Save full histories as JSON
+    # Save full histories as JSON (nested structure)
     histories_dict = {}
-    for model_name, history in all_histories.items():
-        histories_dict[model_name] = {
-            'epoch': history['epoch'],
-            'train_loss': [float(x) for x in history['train_loss']],
-            'val_loss': [float(x) for x in history['val_loss']],
-            'best_epoch': int(best_epochs[model_name]),
-            'best_val_mae': float(best_val_maes[model_name])
-        }
+    for model_name, optimizer_results in all_histories.items():
+        histories_dict[model_name] = {}
+        for optimizer_name, history in optimizer_results.items():
+            # Find best epoch and best val MAE for this optimizer
+            best_val_mae = min(history['val_loss'])
+            best_epoch = history['epoch'][history['val_loss'].index(best_val_mae)]
+            
+            histories_dict[model_name][optimizer_name] = {
+                'epoch': history['epoch'],
+                'train_loss': [float(x) for x in history['train_loss']],
+                'val_loss': [float(x) for x in history['val_loss']],
+                'best_epoch': int(best_epoch),
+                'best_val_mae': float(best_val_mae)
+            }
     
     config.ensure_dir(config.TRAINING_HISTORIES)
     with open(config.TRAINING_HISTORIES, "w") as f:
         json.dump(histories_dict, f, indent=2)
     print(f"\n✓ Training histories saved to {config.TRAINING_HISTORIES}")
     
-    # Generate plots
-    print("\n--- Generating plots ---")
-    num_models = len(all_histories)
-    cols = 2
-    rows = (num_models + 1) // 2
-    
-    fig, axes = plt.subplots(rows, cols, figsize=(16, 6 * rows))
-    if num_models == 1:
-        axes = [axes]
-    else:
-        axes = axes.flatten()
-    
-    for idx, (model_name, history) in enumerate(all_histories.items()):
-        ax = axes[idx]
-        epochs = history['epoch']
-        train_loss = history['train_loss']
-        val_loss = history['val_loss']
-        best_epoch = best_epochs[model_name]
-        best_val_mae = best_val_maes[model_name]
-        
-        ax.plot(epochs, train_loss, label='Train MAE', linewidth=2, alpha=0.8)
-        ax.plot(epochs, val_loss, label='Val MAE', linewidth=2, alpha=0.8)
-        ax.axvline(x=best_epoch, color='red', linestyle='--', linewidth=2, 
-                  label=f'Best Epoch: {best_epoch}')
-        ax.scatter([best_epoch], [best_val_mae], color='red', s=100, zorder=5,
-                  label=f'Best Val MAE: {best_val_mae:.4f}')
-        
-        ax.set_xlabel('Epoch', fontsize=12)
-        ax.set_ylabel('MAE', fontsize=12)
-        ax.set_title(f'{model_name}\nBest: Epoch {best_epoch}, Val MAE: {best_val_mae:.4f}', 
-                    fontsize=13, fontweight='bold')
-        ax.legend(fontsize=10)
-        ax.grid(True, alpha=0.3)
-    
-    # Hide unused subplots
-    for idx in range(num_models, len(axes)):
-        axes[idx].axis('off')
-    
-    plt.tight_layout()
-    plt.savefig('training_curves_all_models.png', dpi=300, bbox_inches='tight')
-    print("✓ Plots saved to training_curves_all_models.png")
-    plt.close()
-    
-    # Create comparison plot
-    fig, ax = plt.subplots(figsize=(14, 8))
-    for model_name, history in all_histories.items():
-        ax.plot(history['epoch'], history['val_loss'], label=model_name, linewidth=2, alpha=0.8)
-    
-    ax.set_xlabel('Epoch', fontsize=12)
-    ax.set_ylabel('Validation MAE', fontsize=12)
-    ax.set_title('Validation Loss Comparison - All Models', fontsize=14, fontweight='bold')
-    ax.legend(fontsize=11)
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig('validation_loss_comparison.png', dpi=300, bbox_inches='tight')
-    print("✓ Comparison plot saved to validation_loss_comparison.png")
-    plt.close()
-    
     print("\n" + "=" * 70)
     print("Experiment Complete!")
     print("=" * 70)
-    print("\nSummary:")
-    print(best_epochs_df.to_string(index=False))
     print(f"\nNext steps:")
-    print(f"  1. Review best_epochs_summary.csv to see the best model")
-    print(f"  2. Run 'python predict_submission.py' to generate final submission")
+    print(f"  1. Review {config.TRAINING_HISTORIES} to see all optimizer results")
+    print(f"  2. Run analysis_notebook.ipynb to visualize optimizer comparisons")
 
 
 if __name__ == "__main__":

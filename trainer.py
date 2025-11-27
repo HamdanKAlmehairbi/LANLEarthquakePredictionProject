@@ -6,6 +6,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 from utils import get_device
+import torch.nn as nn
 
 
 def train_model(model, train_loader, val_loader, epochs=30, learning_rate=0.001):
@@ -14,6 +15,11 @@ def train_model(model, train_loader, val_loader, epochs=30, learning_rate=0.001)
     model.to(device)
     criterion = nn.L1Loss()  # Mean Absolute Error
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    
+    # Add learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=5, verbose=False
+    )
     
     history = {'train_loss': [], 'val_loss': []}
     
@@ -44,8 +50,12 @@ def train_model(model, train_loader, val_loader, epochs=30, learning_rate=0.001)
         val_loss = val_running_loss / len(val_loader)
         history['val_loss'].append(val_loss)
         
+        # Update learning rate scheduler
+        scheduler.step(val_loss)
+        
         if (epoch + 1) % 5 == 0 or epoch == 0:
-            print(f'Epoch {epoch+1}/{epochs}, Train MAE: {train_loss:.4f}, Val MAE: {val_loss:.4f}')
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f'Epoch {epoch+1}/{epochs}, Train MAE: {train_loss:.4f}, Val MAE: {val_loss:.4f}, LR: {current_lr:.6f}')
     
     return history
 
@@ -85,6 +95,11 @@ def train_image_model(model, train_loader, val_loader, epochs=30, learning_rate=
     criterion = nn.L1Loss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     
+    # Add learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=5, verbose=False
+    )
+    
     history = {'train_loss': [], 'val_loss': []}
     
     for epoch in range(epochs):
@@ -116,11 +131,16 @@ def train_image_model(model, train_loader, val_loader, epochs=30, learning_rate=
         val_loss = val_running_loss / len(val_loader)
         history['val_loss'].append(val_loss)
         
+        # Update learning rate scheduler
+        scheduler.step(val_loss)
+        
         # Print every epoch for image models (they train for fewer epochs)
         if epochs <= 10:
-            print(f'Epoch {epoch+1}/{epochs}, Train MAE: {train_loss:.4f}, Val MAE: {val_loss:.4f}')
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f'Epoch {epoch+1}/{epochs}, Train MAE: {train_loss:.4f}, Val MAE: {val_loss:.4f}, LR: {current_lr:.6f}')
         elif (epoch + 1) % 5 == 0 or epoch == 0:
-            print(f'Epoch {epoch+1}/{epochs}, Train MAE: {train_loss:.4f}, Val MAE: {val_loss:.4f}')
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f'Epoch {epoch+1}/{epochs}, Train MAE: {train_loss:.4f}, Val MAE: {val_loss:.4f}, LR: {current_lr:.6f}')
     
     return history
 
@@ -163,5 +183,43 @@ def plot_loss(history, title):
     plt.ylabel('Mean Absolute Error')
     plt.legend()
     plt.show()
+
+
+def train_for_submission(model, train_loader, optimizer, scheduler=None, epochs=30):
+    """
+    A simplified training loop for submission without validation.
+    Used in K-Fold Cross-Validation where we train on fold-specific data.
+    
+    Args:
+        model: PyTorch model to train
+        train_loader: DataLoader for training data
+        optimizer: Optimizer instance
+        scheduler: Optional learning rate scheduler
+        epochs: Number of epochs to train
+    """
+    device = get_device()
+    model.to(device)
+    criterion = nn.L1Loss()
+    
+    for epoch in range(epochs):
+        model.train()
+        running_loss = 0.0
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            if scheduler is not None:
+                scheduler.step()
+            running_loss += loss.item()
+        
+        train_loss = running_loss / len(train_loader)
+        current_lr = optimizer.param_groups[0]['lr']
+        if scheduler is not None:
+            print(f'Epoch {epoch+1}/{epochs}, Train MAE: {train_loss:.4f}, LR: {current_lr:.6f}')
+        else:
+            print(f'Epoch {epoch+1}/{epochs}, Train MAE: {train_loss:.4f}')
 
 

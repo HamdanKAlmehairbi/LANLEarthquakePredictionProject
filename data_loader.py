@@ -7,6 +7,10 @@ def load_data(path_to_csv, nrows=60_000_000):
     """
     Loads a fraction of the LANL earthquake training data.
     If the file is not found, it creates a dummy dataset for demonstration.
+    
+    Args:
+        path_to_csv: Path to the CSV file
+        nrows: Number of rows to load. If None, loads entire file.
     """
     try:
         df = pd.read_csv(
@@ -14,8 +18,13 @@ def load_data(path_to_csv, nrows=60_000_000):
             nrows=nrows,
             dtype={'acoustic_data': np.int16, 'time_to_failure': np.float32}
         )
-        print(f"Loaded {nrows:,} rows from {path_to_csv}")
+        if nrows is None:
+            print(f"Loaded {len(df):,} rows from {path_to_csv}")
+        else:
+            print(f"Loaded {nrows:,} rows from {path_to_csv}")
     except FileNotFoundError:
+        if nrows is None:
+            nrows = 60_000_000  # Default for dummy data
         print(f"Dataset not found at {path_to_csv}. Creating dummy data.")
         df = pd.DataFrame({
             'acoustic_data': np.random.randint(-100, 100, size=nrows),
