@@ -1,0 +1,27 @@
+# File: requirements.txt
+
+# Core deep learning framework
+torch
+torchvision
+torchaudio
+
+# Data handling and scientific computing
+pandas
+numpy
+scikit-learn
+scipy
+
+# Plotting and visualization
+matplotlib
+seaborn
+
+# Utility for progress bars
+tqdm
+
+# Feature extraction for image-based model
+librosa
+
+# For running the analysis notebook
+jupyter
+ipykernel
+
