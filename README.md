@@ -5,44 +5,75 @@
 
 ---
 
+### Table of Contents
+
+1. [Project Overview](#1-project-overview)
+2. [Key Findings](#2-key-findings)
+3. [Performance Results](#3-performance-results)
+4. [Project Structure](#4-project-structure)
+5. [How to Run This Project](#5-how-to-run-this-project)
+6. [Model Architectures & Experiments](#6-model-architectures--experiments)
+
+---
+
 ## 1. Project Overview
 
 This project provides a systematic and reproducible analysis of various deep learning architectures for the **Kaggle LANL Earthquake Prediction** competition. The goal is to predict the `time_to_failure` for laboratory-simulated seismic events based on raw acoustic data.
 
-Our work moves beyond a simple performance comparison by conducting a comprehensive experimental sweep. We evaluate five distinct model architectures against five different optimizer and learning rate scheduler configurations to identify the most effective model-optimizer pairings. The key finding is that a **Hybrid CNN-LSTM with Attention**, trained with **SGD + Momentum and a OneCycleLR scheduler**, achieves state-of-the-art performance, demonstrating a strong synergy between architecture and optimization strategy for this noisy, non-stationary time-series problem.
+Our work moves beyond a simple performance comparison by conducting a comprehensive experimental sweep. We evaluate five distinct model architectures against five different optimizer and learning rate scheduler configurations to identify the most effective model-optimizer pairings.
 
 ## 2. Key Findings
 
-- **Hybrid Architectures Excel:** Models combining 1D CNNs for feature extraction and LSTMs for temporal modeling consistently outperform simpler, monolithic architectures.
+- **Top Performing Model:** A **Hybrid CNN-LSTM with Attention**, trained with **SGD + Momentum and a OneCycleLR scheduler**, achieves the best performance, demonstrating a strong synergy between a sophisticated architecture and a well-configured optimization strategy.
 
-- **Optimizer Synergy is Critical:** The choice of optimizer is as important as the model itself. A well-tuned SGD with a modern scheduler outperformed all variants of Adam, highlighting its ability to find more generalizable solutions.
+- **Hybrid Architectures Excel:** Models combining 1D CNNs for feature extraction and LSTMs for temporal modeling consistently outperform simpler, monolithic architectures like the standalone 1D CNN or LSTM.
 
-- **Image-Based Models are Costly:** The `MLPER-Inspired` approach, while innovative, was computationally expensive and did not yield competitive results under our resource constraints.
+- **Optimizer Synergy is Critical:** The choice of optimizer and scheduler is as important as the model itself. A well-tuned SGD with a modern scheduler outperformed all variants of Adam for the top models, highlighting its ability to find more generalizable solutions on this noisy dataset.
 
-- **State-of-the-Art Performance:** Our best model achieved a validation MAE of **2.277**, which is highly competitive with the winning solutions on the Kaggle leaderboard.
+- **Image-Based Models Are Computationally Expensive:** The `MLPER-Inspired` approach, while innovative, was computationally demanding and did not yield competitive results compared to the best sequence-based models.
 
-## 3. Project Structure
+## 3. Performance Results
+
+The table below summarizes the best validation Mean Absolute Error (MAE) achieved by each model architecture across all optimizer experiments. The results clearly show the superiority of the hybrid attention model.
+
+| Model Architecture         | Best Optimizer Configuration  | Best Validation MAE |
+| -------------------------- | ----------------------------- | ------------------- |
+| **Hybrid w/ Attention**    | `SGD_Momentum_OneCycleLR`     | **2.277**           |
+| **Hybrid CNN-LSTM**        | `SGD_Momentum_OneCycleLR`     | 2.296               |
+| **LSTM**                   | `Adam_OneCycleLR`             | 2.366               |
+| **1D CNN**                 | `Adam_OneCycleLR`             | 2.524               |
+| **MLPER-Inspired (Image)** | `Adam_StaticLR`               | 2.685               |
+
+## 4. Project Structure
+
+The repository is organized into a modular pipeline, separating data preparation, experimentation, and analysis.
 
 ```
 .
-├── data/                     # (Not included in repo) Raw train.csv and test/ folder
+├── data/                     # (Local directory) For raw train.csv and test/ folder
 ├── analysis_notebook.ipynb   # Jupyter notebook for EDA, result visualization, and error analysis
-├── config.py                 # Centralized configuration for all parameters
+├── config.py                 # Central configuration for all parameters and paths
 ├── experiment.py             # Main script for running the optimizer comparison experiment
 ├── features.py               # Feature engineering functions
 ├── image_models.py           # PyTorch definition for the image-based CNN model
 ├── image_transformer.py      # Spectrogram generation logic
 ├── models.py                 # PyTorch definitions for all sequence-based models
 ├── prepare_dataset.py        # One-time script to process raw data and save loaders
-├── predict_submission.py     # Script to generate final submission using K-Fold CV
-├── trainer.py                # Core training and evaluation loops
+├── predict_submission.py     # Script to generate the final submission using K-Fold CV
 ├── requirements.txt          # Python package dependencies
+├── trainer.py                # Core training and evaluation loops
+├── utils.py                  # Helper functions (e.g., set_seed, get_device)
 └── README.md                 # This file
 ```
 
-## 4. How to Run This Project
+## 5. How to Run This Project
 
-### Step 1: Setup and Installation
+### Prerequisites
+
+- **Python 3.8+**
+- **Hardware:** A CUDA-enabled NVIDIA GPU is **highly recommended** due to the size of the dataset and the complexity of the models. Training on a CPU will be extremely slow.
+
+### Step 1: Installation
 
 1.  **Clone the repository:**
 
@@ -51,11 +82,11 @@ Our work moves beyond a simple performance comparison by conducting a comprehens
     cd LANLEarthquakePredictionProject
     ```
 
-2.  **Create a virtual environment (recommended):**
+2.  **Create and activate a virtual environment:**
 
     ```bash
     python -m venv venv
-    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
     ```
 
 3.  **Install the required packages:**
@@ -68,30 +99,45 @@ Our work moves beyond a simple performance comparison by conducting a comprehens
 
 1.  Download the competition data from the [Kaggle LANL Earthquake Prediction page](https://www.kaggle.com/c/lanl-earthquake-prediction/data).
 
-2.  Create a `data/` directory in the project root.
+2.  Create a `data/` directory in the project root and place `train.csv` inside it.
 
-3.  Place `train.csv` inside the `data/` directory.
+3.  Unzip `test.zip` and ensure the `test/` folder is in the project root.
 
-4.  Unzip `test.zip` and ensure the `test/` folder (containing `seg_....csv` files) is in the project root.
+### Step 3: Workflow Options
 
-The final structure should look like this:
+You can choose one of the following workflows depending on your goal.
 
-```
-lanl_earthquake_project/
-├── data/
-│   └── train.csv
-└── test/
-    ├── seg_00030f.csv
-    └── ...
-```
+#### Option A: Analyze Existing Results (Quickest)
 
-### Step 3: Run the Full Workflow
+This option allows you to explore the results of our experiments without re-running any training.
 
-The project is designed as a three-step pipeline.
+1.  Ensure `training_histories.json` is present in the root directory.
+
+2.  Launch the Jupyter Notebook to view all plots and analysis:
+
+    ```bash
+    jupyter notebook analysis_notebook.ipynb
+    ```
+
+#### Option B: Generate Final Submission from Existing Results
+
+This will use the pre-computed `training_histories.json` to identify the best model and then re-train it using a robust 5-Fold Cross-Validation strategy to produce `submission.csv`. This step still requires significant time and a GPU.
+
+1.  Run the submission script:
+
+    ```bash
+    python predict_submission.py
+    ```
+
+#### Option C: Full Reproduction (Very Long)
+
+This workflow reproduces the entire project from scratch, including data preparation and the full optimizer experiment.
+
+⚠️ **Warning:** Running `experiment.py` on the full dataset will take many hours, even on a powerful GPU. For a quick test, first modify `config.py` by setting `MAX_TRAIN_ROWS` to a smaller number (e.g., `60_000_000`).
 
 1.  **Prepare the Dataset (Run Once):**
 
-    This script processes the raw `train.csv`, engineers features, and saves the `DataLoader` objects and the `scaler` to disk. This avoids redundant processing in later steps.
+    This script processes `train.csv`, engineers features, and saves `DataLoader` objects to disk.
 
     ```bash
     python prepare_dataset.py
@@ -99,7 +145,7 @@ The project is designed as a three-step pipeline.
 
 2.  **Run the Optimizer Experiment:**
 
-    This is the main experimental script. It trains all five architectures with all five optimizer configurations and saves the complete results to `training_histories.json`.
+    This trains all models with all optimizer configurations and saves the results to `training_histories.json`.
 
     ```bash
     python experiment.py
@@ -107,45 +153,34 @@ The project is designed as a three-step pipeline.
 
 3.  **Generate the Final Kaggle Submission:**
 
-    This script automatically reads the results from `training_histories.json`, identifies the best-performing model and optimizer, performs 5-Fold Cross-Validation training using that configuration, and generates an ensembled `submission.csv` file.
+    Once the experiment is complete, run the submission script:
 
     ```bash
     python predict_submission.py
     ```
 
-### Step 4: Analyze the Results
+## 6. Model Architectures & Experiments
 
-After running `experiment.py`, you can explore all results and visualizations in the Jupyter Notebook:
+#### Architectures Tested:
 
-```bash
-jupyter notebook analysis_notebook.ipynb
-```
+1.  **1D CNN:** A simple baseline convolutional model.
 
-## 5. Model Architectures & Experiments
+2.  **Bidirectional LSTM:** A standard recurrent neural network for time-series.
 
-- **Architectures Tested:**
+3.  **Hybrid CNN-LSTM:** Combines a 1D CNN for feature extraction with an LSTM for sequence modeling.
 
-  1. 1D CNN
+4.  **Hybrid CNN-LSTM with Attention:** An enhancement to the hybrid model that allows it to weigh the importance of different time steps.
 
-  2. Bidirectional LSTM
+5.  **MLPER-Inspired (Image-based CNN):** A 2D CNN that treats spectrograms of the seismic signal as images.
 
-  3. Hybrid CNN-LSTM
+#### Optimizer Configurations Tested:
 
-  4. Hybrid CNN-LSTM with Attention
+1.  **Adam (Static):** Fixed learning rate of 0.001.
 
-  5. MLPER-Inspired (Image-based CNN)
+2.  **Adam + OneCycleLR:** Adaptive learning rate with a warm-up and cosine decay schedule.
 
-- **Optimizer Configurations Tested:**
+3.  **AdamW + OneCycleLR:** Adam with decoupled weight decay for better regularization.
 
-  1. **Adam (Static):** Fixed learning rate of 0.001.
+4.  **SGD + Momentum + OneCycleLR:** Classic optimizer known for good generalization.
 
-  2. **Adam + OneCycleLR:** Adaptive learning rate with a warm-up and cosine decay schedule.
-
-  3. **AdamW + OneCycleLR:** Adam with decoupled weight decay for better regularization.
-
-  4. **SGD + Momentum + OneCycleLR:** Classic optimizer known for good generalization.
-
-  5. **Adam + CyclicLR:** A triangular learning rate schedule.
-
-The results clearly show that the combination of a hybrid architecture and a well-tuned, non-adaptive optimizer like SGD yielded the best performance.
-
+5.  **Adam + CyclicLR:** A triangular learning rate schedule.
